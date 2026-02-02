@@ -11,18 +11,65 @@ class PostsTest extends TestCase
 {
     use RefreshDatabase;
 
-    public function test_guests_are_redirected_to_login_on_posts_index(): void
+    public function test_posts_index_is_public_and_returns_json(): void
     {
-        $this->get('/posts')->assertRedirect('/login');
+        $this->get('/posts')
+            ->assertOk()
+            ->assertJsonStructure([
+                'posts' => [
+                    'data',
+                    'links',
+                    'meta',
+                ],
+            ]);
     }
 
-    public function test_authenticated_user_can_view_posts_index(): void
+    public function test_posts_index_excludes_drafts_and_scheduled_and_includes_author(): void
     {
+        $author = User::factory()->create();
+
+        $published = Post::factory()->for($author)->published()->create([
+            'title' => 'Published',
+        ]);
+        Post::factory()->for($author)->draft()->create([
+            'title' => 'Draft',
+        ]);
+        Post::factory()->for($author)->scheduled()->create([
+            'title' => 'Scheduled',
+        ]);
+
+        $this->get('/posts')
+            ->assertOk()
+            ->assertJsonFragment(['id' => $published->id])
+            ->assertJsonMissing(['title' => 'Draft'])
+            ->assertJsonMissing(['title' => 'Scheduled'])
+            ->assertJsonFragment(['id' => $author->id]);
+    }
+
+    public function test_posts_create_requires_auth_and_returns_string(): void
+    {
+        $this->get('/posts/create')->assertRedirect('/login');
+
         $user = User::factory()->create();
 
         $this->actingAs($user)
-            ->get('/posts')
-            ->assertOk();
+            ->get('/posts/create')
+            ->assertOk()
+            ->assertSeeText('posts.create');
+    }
+
+    public function test_posts_store_requires_auth_and_validates(): void
+    {
+        $this->post('/posts', [
+            'title' => 'x',
+            'content' => 'y',
+        ])->assertRedirect('/login');
+
+        $user = User::factory()->create();
+
+        $this->actingAs($user)
+            ->post('/posts', [])
+            ->assertSessionHasErrors(['title', 'content']);
     }
 
     public function test_user_can_create_a_draft_post(): void
@@ -48,15 +95,29 @@ class PostsTest extends TestCase
         ]);
     }
 
-    public function test_user_cannot_view_another_users_post(): void
+    public function test_posts_show_returns_404_for_draft_or_scheduled_and_json_for_published(): void
     {
-        $user = User::factory()->create();
-        $otherUser = User::factory()->create();
-        $post = Post::factory()->for($otherUser)->create();
+        $author = User::factory()->create();
+        $draft = Post::factory()->for($author)->draft()->create();
+        $scheduled = Post::factory()->for($author)->scheduled()->create();
+        $published = Post::factory()->for($author)->published()->create();
 
-        $this->actingAs($user)
-            ->get('/posts/'.$post->id)
-            ->assertForbidden();
+        $this->get('/posts/'.$draft->id)->assertNotFound();
+        $this->get('/posts/'.$scheduled->id)->assertNotFound();
+        $this->get('/posts/'.$published->id)
+            ->assertOk()
+            ->assertJsonPath('post.id', $published->id)
+            ->assertJsonPath('post.user.id', $author->id);
+    }
+
+    public function test_posts_edit_is_only_accessible_by_author_and_returns_string(): void
+    {
+        $author = User::factory()->create();
+        $other = User::factory()->create();
+        $post = Post::factory()->for($author)->draft()->create();
+
+        $this->actingAs($other)->get('/posts/'.$post->id.'/edit')->assertForbidden();
+        $this->actingAs($author)->get('/posts/'.$post->id.'/edit')->assertOk()->assertSeeText('posts.edit');
     }
 
     public function test_user_can_update_own_post(): void
