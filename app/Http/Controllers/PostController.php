@@ -69,7 +69,7 @@ class PostController extends Controller
         }
 
         return response()->json([
-            'post' => $post,
+            'post' => (new PostResource($post))->toArray($request),
         ]);
     }
 
